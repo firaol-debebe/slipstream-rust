@@ -40,17 +40,17 @@ jobs:
         run: |
           cargo build -p slipstream-client -p slipstream-server --release --target x86_64-unknown-linux-gnu
 
-      - name: Build release (aarch64)
-        run: |
-          cargo build -p slipstream-client -p slipstream-server --release --target aarch64-unknown-linux-gnu
+      # - name: Build release (aarch64)
+      #   run: |
+      #     cargo build -p slipstream-client -p slipstream-server --release --target aarch64-unknown-linux-gnu
 
       - name: Package Linux artifacts
         run: |
           mkdir -p out/linux
           cp target/x86_64-unknown-linux-gnu/release/slipstream-client out/linux/ || true
           cp target/x86_64-unknown-linux-gnu/release/slipstream-server out/linux/ || true
-          cp target/aarch64-unknown-linux-gnu/release/slipstream-client out/linux/slipstream-client-aarch64 || true
-          cp target/aarch64-unknown-linux-gnu/release/slipstream-server out/linux/slipstream-server-aarch64 || true
+          # cp target/aarch64-unknown-linux-gnu/release/slipstream-client out/linux/slipstream-client-aarch64 || true
+          # cp target/aarch64-unknown-linux-gnu/release/slipstream-server out/linux/slipstream-server-aarch64 || true
           tar -czf slipstream-linux-artifacts.tar.gz -C out linux
 
       - name: Upload Linux artifact
@@ -76,17 +76,25 @@ jobs:
       - name: Add targets
         run: |
           rustup target add x86_64-pc-windows-msvc || true
-          rustup target add aarch64-pc-windows-msvc || true
+          # rustup target add aarch64-pc-windows-msvc || true
+          
+      - name: Bootstrap vcpkg and install openssh
+        shell: powershell
+        run: |
+          git clone https://github.com/microsoft/vcpkg.git vcpkg
+          .\vcpkg\bootstrap-vcpkg.bat
+          .\vcpkg\vcpkg.exe install openssl:arm64-windows
 
       - name: Build x86_64-pc-windows-msvc
         shell: powershell
         run: |
-          cargo build -p slipstream-client -p slipstream-server --release --target x86_64-pc-windows-msvc
+          $env:OPENSSL_DIR = "$(pwd)\vcpkg\installed\x64-windows"
+          cargo build --release --target x86_64-pc-windows-msvc -p slipstream-client -p slipstream-server
 
-      - name: Build aarch64-pc-windows-msvc
-        shell: powershell
-        run: |
-          cargo build -p slipstream-client -p slipstream-server --release --target aarch64-pc-windows-msvc
+      # - name: Build aarch64-pc-windows-msvc
+      #   shell: powershell
+      #   run: |
+      #     cargo build -p slipstream-client -p slipstream-server --release --target aarch64-pc-windows-msvc
 
       - name: Package Windows artifacts
         shell: powershell
@@ -94,8 +102,8 @@ jobs:
           mkdir out\windows
           Copy-Item -Path target\x86_64-pc-windows-msvc\release\slipstream-client.exe -Destination out\windows -ErrorAction SilentlyContinue
           Copy-Item -Path target\x86_64-pc-windows-msvc\release\slipstream-server.exe -Destination out\windows -ErrorAction SilentlyContinue
-          Copy-Item -Path target\aarch64-pc-windows-msvc\release\slipstream-client.exe -Destination out\windows -ErrorAction SilentlyContinue
-          Copy-Item -Path target\aarch64-pc-windows-msvc\release\slipstream-server.exe -Destination out\windows -ErrorAction SilentlyContinue
+          # Copy-Item -Path target\aarch64-pc-windows-msvc\release\slipstream-client.exe -Destination out\windows -ErrorAction SilentlyContinue
+          # Copy-Item -Path target\aarch64-pc-windows-msvc\release\slipstream-server.exe -Destination out\windows -ErrorAction SilentlyContinue
           Compress-Archive -Path out\windows -DestinationPath slipstream-windows-artifacts.zip -Force
 
       - name: Upload Windows artifact
@@ -123,20 +131,20 @@ jobs:
           toolchain: stable
           override: true
 
-      - name: Install cargo-ndk
+      - name: Download Android NDK (r25b)
         run: |
-          cargo install cargo-ndk
-
-      - name: Install Android NDK (r25)
-        uses: go-android/setup-ndk@v1
-        with:
-          ndk-version: r25b
-
+          curl -L -o ndk.zip https://dl.google.com/android/repository/android-ndk-r25b-linux.zip
+          unzip ndk.zip -d $HOME/android-ndk
+          echo "ANDROID_NDK_HOME=$HOME/android-ndk/android-ndk-r25b" >> $GITHUB_ENV
+      
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk
+      
       - name: Build Android targets
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"
-          cargo ndk -t armeabi-v7a -t arm64-v8a -o out/android build --release -p slipstream-client -p slipstream-server || true
-
+          cargo ndk -t armeabi-v7a -t arm64-v8a -o out/android --ndk $ANDROID_NDK_HOME build --release -p slipstream-client -p slipstream-server
+          
       - name: Package Android artifacts
         run: |
           tar -czf slipstream-android-artifacts.tar.gz -C out android || true
