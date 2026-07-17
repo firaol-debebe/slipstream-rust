@@ -5,7 +5,8 @@ param(
     [string]$StageDir = "",
     [string]$OpenSslStageDir = "",
     [string]$Configuration = "Release",
-    [string]$Platform = "x64"
+    [string]$Platform = "x64",
+    [switch]$UseNinja
 )
 
 Set-StrictMode -Version Latest
@@ -292,11 +293,23 @@ function Invoke-CMakePicoquicBuild {
         throw "picotls Windows compatibility CMake overlay not found at $picotlsWindowsCompatOverlay"
     }
     $picotlsWindowsCompatOverlay = $picotlsWindowsCompatOverlay.Replace('\', '/')
+    # Choose generator: prefer Visual Studio generator, but fall back to Ninja if requested or VS is not found
+    $generatorArgs = @()
+    if ($UseNinja) {
+        # use Ninja generator (ensure ninja is on PATH on the runner)
+        $generatorArgs += "-G"
+        $generatorArgs += "Ninja"
+    } else {
+        $generatorArgs += "-G"
+        $generatorArgs += "Visual Studio 17 2022"
+        $generatorArgs += "-A"
+        $generatorArgs += $Platform
+    }
+
     $cmakeArgs = @(
         "-S", $PicoquicDir,
-        "-B", $BuildDir,
-        "-G", "Visual Studio 17 2022",
-        "-A", $Platform,
+        "-B", $BuildDir
+    ) + $generatorArgs + @(
         "-DPICOQUIC_FETCH_PTLS=ON",
         "-DBUILD_DEMO=OFF",
         "-DBUILD_HTTP=OFF",
