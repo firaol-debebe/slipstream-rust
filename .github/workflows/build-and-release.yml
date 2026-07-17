@@ -67,19 +67,25 @@ jobs:
       - name: Install OpenSSL via vcpkg (x64 static)
         shell: powershell
         run: |
-          # Use the static triplet to get static libs that the Windows helper expects
           .\vcpkg\vcpkg.exe install openssl:x64-windows-static
           $installed = Join-Path $PWD 'vcpkg\installed\x64-windows-static'
           "VCPKG_INSTALLATION_ROOT=$PWD\vcpkg" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          # We do not attempt to guess the exact library filenames here; the Windows helper
-          # script will search the vcpkg layout and stage OpenSSL into the OpenSSL stage.
           "VCPKG_TRIPLET=x64-windows-static" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Build/preset picoquic for Windows (stages OpenSSL and exports envs)
+      - name: Ensure Ninja is available (Windows)
         shell: powershell
         run: |
-          # The helper will try to locate vcpkg and stage OpenSSL and set OPENSSL_* env vars
-          pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\build_picoquic_windows.ps1 -Platform x64
+          # runner usually has ninja; try winget (if available), otherwise rely on existing ninja
+          if (-not (Get-Command ninja.exe -ErrorAction SilentlyContinue)) {
+            Write-Host "Ninja not found in PATH; attempting to install via choco"
+            choco install -y ninja || Write-Host "choco install failed; hoping ninja is available"
+          }
+
+      - name: Build/preset picoquic for Windows (stages OpenSSL and exports envs, prefer Ninja)
+        shell: powershell
+        run: |
+          # Use the windows helper; pass -UseNinja so it will use Ninja generator when Visual Studio not found.
+          .\scripts\build_picoquic_windows.ps1 -Platform x64 -UseNinja
 
       - name: Setup Rust
         uses: actions-rs/toolchain@v1
@@ -104,7 +110,6 @@ jobs:
           PICOQUIC_LIB_DIR: ${{ env.PICOQUIC_LIB_DIR }}
           PICOTLS_INCLUDE_DIR: ${{ env.PICOTLS_INCLUDE_DIR }}
         run: |
-          # Build after picoquic staging; the script staged OpenSSL and picoquic and exported env vars.
           cargo build -p slipstream-client -p slipstream-server --release --target x86_64-pc-windows-msvc
 
       - name: Package Windows artifacts
@@ -147,7 +152,6 @@ jobs:
           ANDROID_PLATFORM: android-21
           PICOQUIC_ANDROID: "1"
         run: |
-          # Build picoquic (this script expects ANDROID_NDK_HOME and will stage artifacts under .picoquic-build)
           chmod +x ./scripts/build_picoquic.sh
           ANDROID_ABI=arm64-v8a ANDROID_PLATFORM=android-21 ANDROID_NDK_HOME="$ANDROID_NDK_HOME" ./scripts/build_picoquic.sh
 
@@ -171,9 +175,10 @@ jobs:
           PICOQUIC_INCLUDE_DIR: ${{ env.PICOQUIC_INCLUDE_DIR }}
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"
-          # ensure no conflicting env var
           unset ANDROID_NDK_ROOT || true
-          # cargo-ndk should pick up ANDROID_NDK_HOME and PICOQUIC_* env vars
+          # Set pkg-config sysroot so openssl-sys can locate staged OpenSSL (if needed)
+          export PKG_CONFIG_SYSROOT_DIR="$(pwd)/.picoquic-build"
+          export PKG_CONFIG_PATH="$(pwd)/.picoquic-build/lib/pkgconfig:$(pwd)/.picoquic-build/_deps/picotls-src/lib/pkgconfig"
           cargo ndk -t arm64-v8a -o out/android build --release -p slipstream-client -p slipstream-server
 
       - name: Package Android artifacts
