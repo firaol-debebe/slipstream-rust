@@ -69,10 +69,11 @@ jobs:
         run: |
           .\vcpkg\vcpkg.exe install openssl:x64-windows
           $installed = Join-Path $PWD 'vcpkg\installed\x64-windows'
+          "OPENSSL_ROOT_DIR=$installed" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "OPENSSL_DIR=$installed" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "OPENSSL_INCLUDE_DIR=$installed\include" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "OPENSSL_LIB_DIR=$installed\lib" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          # Also set the platform-specific OPENSSL dir variables some build scripts read:
+          # Also set platform-specific var some build scripts read:
           "X86_64_PC_WINDOWS_MSVC_OPENSSL_DIR=$installed" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Setup Rust
@@ -87,9 +88,11 @@ jobs:
       - name: Build x86_64-pc-windows-msvc
         shell: powershell
         env:
+          OPENSSL_ROOT_DIR: ${{ env.OPENSSL_ROOT_DIR }}
           OPENSSL_DIR: ${{ env.OPENSSL_DIR }}
           OPENSSL_INCLUDE_DIR: ${{ env.OPENSSL_INCLUDE_DIR }}
           OPENSSL_LIB_DIR: ${{ env.OPENSSL_LIB_DIR }}
+          X86_64_PC_WINDOWS_MSVC_OPENSSL_DIR: ${{ env.X86_64_PC_WINDOWS_MSVC_OPENSSL_DIR }}
         run: |
           cargo build -p slipstream-client -p slipstream-server --release --target x86_64-pc-windows-msvc
 
@@ -115,10 +118,16 @@ jobs:
         with:
           submodules: 'recursive'
 
-      - name: Install dependencies
+      - name: Install host dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y pkg-config build-essential cmake python3 unzip
+          sudo apt-get install -y pkg-config build-essential cmake python3 unzip clang
+
+      - name: Setup Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
 
       - name: Install cargo-ndk
         run: cargo install cargo-ndk
@@ -129,10 +138,15 @@ jobs:
           unzip ndk.zip -d $HOME/android-ndk
           echo "ANDROID_NDK_HOME=$HOME/android-ndk/android-ndk-r25b" >> $GITHUB_ENV
 
+      - name: Add Rust target for Android arm64
+        run: rustup target add aarch64-linux-android || true
+
       - name: Build Android arm64 (arm64-v8a)
         env:
-          PATH: ${{ runner.tool_cache }}/cargo/bin:$PATH
+          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_HOME }}
         run: |
+          # Ensure no conflicting NDK env var from runner
+          unset ANDROID_NDK_ROOT || true
           export PATH="$HOME/.cargo/bin:$PATH"
           export ANDROID_NDK_HOME="$ANDROID_NDK_HOME"
           cargo ndk -t arm64-v8a -o out/android build --release -p slipstream-client -p slipstream-server
