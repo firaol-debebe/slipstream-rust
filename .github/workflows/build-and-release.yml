@@ -64,17 +64,22 @@ jobs:
           git clone https://github.com/microsoft/vcpkg.git vcpkg
           .\vcpkg\bootstrap-vcpkg.bat
 
-      - name: Install OpenSSL via vcpkg (x64)
+      - name: Install OpenSSL via vcpkg (x64 static)
         shell: powershell
         run: |
-          .\vcpkg\vcpkg.exe install openssl:x64-windows
-          $installed = Join-Path $PWD 'vcpkg\installed\x64-windows'
-          "OPENSSL_ROOT_DIR=$installed" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "OPENSSL_DIR=$installed" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "OPENSSL_INCLUDE_DIR=$installed\include" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "OPENSSL_LIB_DIR=$installed\lib" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          # Also set platform-specific var some build scripts read:
-          "X86_64_PC_WINDOWS_MSVC_OPENSSL_DIR=$installed" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          # Use the static triplet to get static libs that the Windows helper expects
+          .\vcpkg\vcpkg.exe install openssl:x64-windows-static
+          $installed = Join-Path $PWD 'vcpkg\installed\x64-windows-static'
+          "VCPKG_INSTALLATION_ROOT=$PWD\vcpkg" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          # We do not attempt to guess the exact library filenames here; the Windows helper
+          # script will search the vcpkg layout and stage OpenSSL into the OpenSSL stage.
+          "VCPKG_TRIPLET=x64-windows-static" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build/preset picoquic for Windows (stages OpenSSL and exports envs)
+        shell: powershell
+        run: |
+          # The helper will try to locate vcpkg and stage OpenSSL and set OPENSSL_* env vars
+          pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\build_picoquic_windows.ps1 -Platform x64
 
       - name: Setup Rust
         uses: actions-rs/toolchain@v1
@@ -88,12 +93,18 @@ jobs:
       - name: Build x86_64-pc-windows-msvc
         shell: powershell
         env:
+          # these should have been exported to GITHUB_ENV by the PowerShell helper script
           OPENSSL_ROOT_DIR: ${{ env.OPENSSL_ROOT_DIR }}
           OPENSSL_DIR: ${{ env.OPENSSL_DIR }}
           OPENSSL_INCLUDE_DIR: ${{ env.OPENSSL_INCLUDE_DIR }}
           OPENSSL_LIB_DIR: ${{ env.OPENSSL_LIB_DIR }}
-          X86_64_PC_WINDOWS_MSVC_OPENSSL_DIR: ${{ env.X86_64_PC_WINDOWS_MSVC_OPENSSL_DIR }}
+          OPENSSL_SSL_LIBRARY: ${{ env.OPENSSL_SSL_LIBRARY }}
+          OPENSSL_CRYPTO_LIBRARY: ${{ env.OPENSSL_CRYPTO_LIBRARY }}
+          PICOQUIC_INCLUDE_DIR: ${{ env.PICOQUIC_INCLUDE_DIR }}
+          PICOQUIC_LIB_DIR: ${{ env.PICOQUIC_LIB_DIR }}
+          PICOTLS_INCLUDE_DIR: ${{ env.PICOTLS_INCLUDE_DIR }}
         run: |
+          # Build after picoquic staging; the script staged OpenSSL and picoquic and exported env vars.
           cargo build -p slipstream-client -p slipstream-server --release --target x86_64-pc-windows-msvc
 
       - name: Package Windows artifacts
@@ -123,32 +134,46 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y pkg-config build-essential cmake python3 unzip clang
 
-      - name: Setup Rust
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          override: true
-
-      - name: Install cargo-ndk
-        run: cargo install cargo-ndk
-
       - name: Download Android NDK (r25b)
         run: |
           curl -L -o ndk.zip https://dl.google.com/android/repository/android-ndk-r25b-linux.zip
           unzip ndk.zip -d $HOME/android-ndk
           echo "ANDROID_NDK_HOME=$HOME/android-ndk/android-ndk-r25b" >> $GITHUB_ENV
 
-      - name: Add Rust target for Android arm64
-        run: rustup target add aarch64-linux-android || true
+      - name: Prepare and build picoquic for Android
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_HOME }}
+          ANDROID_ABI: arm64-v8a
+          ANDROID_PLATFORM: android-21
+          PICOQUIC_ANDROID: "1"
+        run: |
+          # Build picoquic (this script expects ANDROID_NDK_HOME and will stage artifacts under .picoquic-build)
+          chmod +x ./scripts/build_picoquic.sh
+          ANDROID_ABI=arm64-v8a ANDROID_PLATFORM=android-21 ANDROID_NDK_HOME="$ANDROID_NDK_HOME" ./scripts/build_picoquic.sh
+
+          # Expose picoquic build outputs to the Cargo build via env
+          echo "PICOQUIC_BUILD_DIR=$(pwd)/.picoquic-build" >> $GITHUB_ENV
+          echo "PICOQUIC_LIB_DIR=$(pwd)/.picoquic-build" >> $GITHUB_ENV
+          echo "PICOQUIC_INCLUDE_DIR=$(pwd)/vendor/picoquic/picoquic" >> $GITHUB_ENV
+
+      - name: Setup Rust and add Android target
+        run: |
+          rustup toolchain install stable
+          rustup default stable
+          rustup target add aarch64-linux-android || true
+          cargo install cargo-ndk
 
       - name: Build Android arm64 (arm64-v8a)
         env:
           ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_HOME }}
+          PICOQUIC_BUILD_DIR: ${{ env.PICOQUIC_BUILD_DIR }}
+          PICOQUIC_LIB_DIR: ${{ env.PICOQUIC_LIB_DIR }}
+          PICOQUIC_INCLUDE_DIR: ${{ env.PICOQUIC_INCLUDE_DIR }}
         run: |
-          # Ensure no conflicting NDK env var from runner
-          unset ANDROID_NDK_ROOT || true
           export PATH="$HOME/.cargo/bin:$PATH"
-          export ANDROID_NDK_HOME="$ANDROID_NDK_HOME"
+          # ensure no conflicting env var
+          unset ANDROID_NDK_ROOT || true
+          # cargo-ndk should pick up ANDROID_NDK_HOME and PICOQUIC_* env vars
           cargo ndk -t arm64-v8a -o out/android build --release -p slipstream-client -p slipstream-server
 
       - name: Package Android artifacts
